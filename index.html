@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="build-version" content="2026-10-28-02">
+<meta name="build-version" content="2026-10-28-03">
 <title>EPC and DEC pricing – CSR Sustain</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -936,7 +936,7 @@ function areaSourceText(l){
 
 /* ---------- existing EPCs: the register files sit in a folder next to this page ----------
    epc-data/<postcode district>.json, e.g. epc-data/BL9.json. Only address, rating, floor area and expiry are shown. */
-const EPC = {files:null, cache:{}};
+const EPC = {files:null, cache:{}, folder:null};
 const epcExpiry = r => { const d = new Date((r.lodgementDate || r.inspectionDate) + "T12:00:00"); d.setFullYear(d.getFullYear() + 10); return d.toISOString().slice(0, 10); };   // a non-domestic EPC lasts 10 years
 async function epcDistrict(outcode){
   outcode = outcode.toUpperCase();
@@ -947,12 +947,17 @@ async function epcDistrict(outcode){
     if(!f) return (EPC.cache[outcode] = []);
     data = JSON.parse(await f.text());
   } else {
-    try{
-      const res = await withTimeout(fetch((S().epcFolder || "epc-data").replace(/\/$/, "") + "/" + encodeURIComponent(outcode) + ".json"), 8000);
-      if(res.status === 404){ const probe = await fetch((S().epcFolder || "epc-data").replace(/\/$/, "") + "/_meta.json").catch(() => null); if(probe && probe.ok) return (EPC.cache[outcode] = []); throw new Error("nofolder"); }
-      if(!res.ok) throw new Error("nofolder");
-      data = await res.json();
-    }catch(e){ const err = new Error("nofolder"); err.needFolder = true; throw err; }
+    // look in the folder set in Settings, then the usual places next to this page; remember the one that works
+    const folders = [...new Set([EPC.folder, window.CSR_CONFIG && window.CSR_CONFIG.epcFolder, S().epcFolder, "epc-data", "epc-data-for-github/epc-data"].filter(Boolean).map(f => String(f).replace(/\/$/, "")))];
+    let found = false;
+    for(const f of folders){
+      try{
+        const res = await withTimeout(fetch(f + "/" + encodeURIComponent(outcode) + ".json"), 8000);
+        if(res.ok){ data = await res.json(); EPC.folder = f; found = true; break; }
+        if(res.status === 404){ const probe = await fetch(f + "/_meta.json").catch(() => null); if(probe && probe.ok){ EPC.folder = f; return (EPC.cache[outcode] = []); } }
+      }catch(e){ /* try the next folder */ }
+    }
+    if(!found){ const err = new Error("nofolder"); err.needFolder = true; throw err; }
   }
   return (EPC.cache[outcode] = (data && data.results || []).map(r => ({lmk:r.lmk, address:r.address, postcode:r.postcode, band:r.band, rating:r.assetRating, area:r.floorArea, lodged:r.lodgementDate, expiry:epcExpiry(r)})));
 }
