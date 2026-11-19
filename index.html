@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="build-version" content="2026-10-28-03">
+<meta name="build-version" content="2026-11-19-02">
 <title>EPC and DEC pricing – CSR Sustain</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -332,6 +332,9 @@ table.tbl{width:100%; border-collapse:collapse; font-size:14px;}
 .qlist button, .qcard{transition:transform .15s, box-shadow .15s, background .15s;}
 .qlist button:hover, .qcard:hover{transform:translateY(-1px); box-shadow:0 1px 0 #D4DFDD, 0 2px 0 #C6D4D2, 0 8px 14px -10px rgba(28,69,71,.4);}
 .bar i{box-shadow:inset 3px 0 0 rgba(255,255,255,.18), inset -4px 0 0 rgba(0,0,0,.12), 0 3px 6px -2px rgba(28,69,71,.35);}
+.svc-price{padding:12px 0; border-top:1px solid var(--line, #DCE5E4);}
+.svc-price:first-of-type{border-top:0; padding-top:0;}
+.svc-price .field{max-width:420px;}
 /* quote form: building and cost rows sit slightly into the card, the price breakdown stands out */
 .row{box-shadow:inset 0 1px 2px rgba(28,69,71,.06), 0 1px 0 rgba(255,255,255,.7);}
 .ledger{box-shadow:0 1px 0 #2A5B5D, 0 2px 0 #24504F, 0 3px 0 #1E4547, 0 4px 0 #183B3D, 0 24px 40px -18px rgba(0,0,0,.6);}
@@ -411,9 +414,45 @@ let toastT = null;
 function toast(msg){ $$(".toast").forEach(t => t.remove()); const t = document.createElement("div"); t.className = "toast"; t.setAttribute("role", "status"); t.textContent = msg; document.body.appendChild(t); clearTimeout(toastT); toastT = setTimeout(() => t.remove(), 2800); }
 
 /* ---------- settings and quotes ---------- */
+const SVC_COLS = [["epc","EPC levels 3–4"],["epc5","EPC level 5"],["dec","DEC"],["mees","MEES"]];
+const BAND_LIMITS = [100, 250, 500, 1000, 2500, 5000, 10000, 20000, ""];
+function defaultBands(fees){ return BAND_LIMITS.map((u, i) => ({id:uid(), upTo:u, fee:fees ? fees[i] : ""})); }
+const colFor = l => l.cert === "DEC" ? "dec" : l.cert === "MEES" ? "mees" : (l.level === "5" ? "epc5" : "epc");
+const isBanded = col => !!(S().pricing && S().pricing[col] && S().pricing[col].method === "bands");
+const fmtM2 = n => Number(n).toLocaleString("en-GB");
+/* label for a band, e.g. "Up to 100 m²", "101 – 250 m²", "Over 20,000 m²" */
+function bandLabel(lo, hi){ return hi === null ? "Over " + fmtM2(lo) + " m²" : lo === 0 ? "Up to " + fmtM2(hi) + " m²" : fmtM2(lo + 1) + " – " + fmtM2(hi) + " m²"; }
+/* the band a floor area falls in: first band whose upper limit is at or above the area; null if above every limit */
+function bandFor(col, area){
+  const bands = (S().pricing[col] || {}).bands || []; let lo = 0;
+  for(let i = 0; i < bands.length; i++){ const hi = num(bands[i].upTo);
+    if(hi === null || area <= hi) return {i, lo, hi, fee:num(bands[i].fee), label:bandLabel(lo, hi)};
+    lo = hi; }
+  return null;
+}
+/* problems with a band table: limits must rise, and only the last band may be open ended */
+function bandIssues(col){
+  const b = S().pricing[col].bands, out = []; let prev = 0;
+  b.forEach((x, i) => { const hi = num(x.upTo);
+    if(hi === null && i < b.length - 1) out.push("only the last band can have no upper limit");
+    else if(hi !== null && hi <= prev) out.push("upper limits must increase down the table");
+    if(hi !== null) prev = hi; });
+  if(b.length && num(b[b.length - 1].upTo) !== null) out.push("there is no band above " + fmtM2(prev) + " m², so larger buildings can't be priced");
+  return [...new Set(out)];
+}
 function defaultSettings(){
   return {
     rates:DEFAULT_TYPES.map(t => ({id:uid(), type:t, epc:"", epc5:"", dec:"", mees:""})),
+    /* how each service is priced: "rate" = floor area × £/m² card rate for the property type;
+       "bands" = a fixed fee per certificate set by floor area band (economies of scale).
+       Each band runs from the previous band's upper limit to its own; a blank upper limit means "and above",
+       a blank fee means price on application (Gary or Luke enter the fee on the quote). */
+    pricing:{
+      epc:{method:"bands", bands:defaultBands([255,295,340,425,595,850,1190,1665,""])},
+      epc5:{method:"rate", bands:defaultBands()},
+      dec:{method:"rate", bands:defaultBands()},
+      mees:{method:"rate", bands:defaultBands()}
+    },
     mileageRate:0.55, hourRate:40,
     lodgement:{epc:40, dec:"", mees:""},
     rounding:{to:10, apply:"total"},          // round the total including VAT (or "net") to the nearest £10
@@ -438,6 +477,8 @@ function mergeSettings(d){
   const base = defaultSettings(), out = Object.assign({}, base, d);
   ["lodgement","rounding","programme","scope","deliverables","travelAdj","travel","discount","vat","google"].forEach(k => { out[k] = Object.assign({}, base[k], d[k] || {}); });
   out.rates = (d.rates || base.rates).map(r => Object.assign({epc5:"", mees:""}, r));
+  out.pricing = {};
+  SVC_COLS.forEach(([k]) => { const p = (d.pricing || {})[k] || {}; out.pricing[k] = {method:p.method ? (p.method === "bands" ? "bands" : "rate") : base.pricing[k].method, bands:Array.isArray(p.bands) ? p.bands.map(b => Object.assign({id:uid(), upTo:"", fee:""}, b)) : base.pricing[k].bands}; });
   ["scope","deliverables"].forEach(k => { out[k] = Object.assign({}, base[k], d[k] || {}); });
   out.team = d.team || [];
   return out;
@@ -507,7 +548,7 @@ const ME = {
 };
 
 /* ---------- the quote model ---------- */
-const newLine = () => ({id:uid(), site:"", postcode:"", cert:"EPC", typeId:"", level:"", area:"", override:"", reason:"", split:{on:false, mode:"pct", parts:[]}});
+const newLine = () => ({id:uid(), site:"", postcode:"", cert:"EPC", typeId:"", level:"", area:"", override:"", overrideFee:"", reason:"", split:{on:false, mode:"pct", parts:[]}});
 const newPart = (typeId = "", value = "") => ({id:uid(), typeId, value});
 const EXPENSE_TYPES = ["Accommodation","Meals","Parking","Other"];
 const newExpense = (type = "Accommodation") => ({id:uid(), type, desc:"", qty:"1", unit:""});
@@ -535,7 +576,12 @@ const log = (q, text) => q.history.push({at:nowISO(), by:ME.name() || "", text})
 /* ---------- pricing ---------- */
 function rateFor(line){
   const t = S().rates.find(r => r.id === line.typeId);
-  const col = line.cert === "DEC" ? "dec" : line.cert === "MEES" ? "mees" : (line.level === "5" ? "epc5" : "epc");
+  const col = colFor(line);
+  if(isBanded(col)){   // fixed fee for the floor area band; a fee entered on the quote replaces it
+    const area = num(line.area), band = area > 0 ? bandFor(col, area) : null;
+    const card = band ? band.fee : null, ov = num(line.overrideFee);
+    return {banded:true, band, card, fee:ov !== null ? ov : card, overridden:ov !== null, type:t, col};
+  }
   const card = t ? num(t[col]) : null;
   const ov = num(line.override);
   return {card, rate:ov !== null ? ov : card, overridden:ov !== null, type:t, col};
@@ -576,6 +622,10 @@ function splitParts(l){
    the result is rounded to the nearest £10 */
 function price(q){
   const lines = q.lines.map(l => { const r = rateFor(l), area = num(l.area);
+    if(r.banded){   // one fee for the whole building, whatever its uses
+      const ok = area !== null && area > 0 && r.fee !== null, charge = ok ? r2(r.fee) : 0;
+      return {l, banded:true, band:r.band, fee:r.fee, rate:ok ? r2(charge / area * 10000) / 10000 : null, card:r.card, overridden:r.overridden, type:r.type, col:r.col, area, charge, ok};
+    }
     const sp = splitParts(l);
     if(sp && !r.overridden){
       const ok = area > 0 && sp.parts.length > 0 && sp.parts.every(x => x.rate !== null && x.area > 0) && sp.balanced;
@@ -611,6 +661,17 @@ function problems(q){
   if(!q.preparedBy) out.push("Choose who prepared the quote.");
   p.lines.forEach((x, i) => {
     const n = "Building " + (i + 1);
+    if(x.banded){
+      const svc = x.col === "epc5" ? "EPC level 5" : x.l.cert;
+      if(x.area > 0 && !x.overridden){
+        if(!x.band) out.push(n + ": " + fmtM2(x.area) + " m² is above the largest " + svc + " size band – Gary or Luke need to enter a fee for this building.");
+        else if(x.card === null) out.push(n + ": " + fmtM2(x.area) + " m² is in the " + svc + " price-on-application band (" + x.band.label + ") – Gary or Luke need to enter a fee for this building.");
+      }
+      if(!(x.area > 0)) out.push(n + ": enter the floor area.");
+      if(x.overridden && !x.l.reason.trim()) out.push(n + ": give a reason for the changed fee.");
+      if(!x.l.postcode.trim()) out.push(n + ": enter the postcode so travel can be worked out.");
+      return;
+    }
     if(x.split){
       const sp = x.split;
       if(sp.parts.length < 2) out.push(n + ": add at least two uses to the split, or switch the split off.");
@@ -1174,8 +1235,19 @@ function splitCalc(x){
   const sp = x.split;
   return sp.parts.map(pt => `${pt.area.toLocaleString("en-GB")} m² ${esc(pt.type ? pt.type.type.toLowerCase() : "?")} × ${pt.rate !== null ? gbp(pt.rate) : "no rate"}`).join(" + ") + ` = <strong>${x.ok ? gbp(x.charge) : "–"}</strong>${x.ok ? ` <span class="hint">(average ${gbp(x.rate)} per m²)</span>` : ""}`;
 }
+/* banded services: one fixed fee per building; Gary or Luke can replace it (and must, in a price-on-application band) */
+function bandedOpts(x, boss){
+  const l = x.l, id = l.id, poa = x.area > 0 && x.card === null;
+  if(boss && (num(l.overrideFee) !== null || l._showOv || poa))
+    return `<span class="ov"><label for="o-${id}">Fee for this quote (£)</label><input id="o-${id}" data-l="overrideFee" type="number" inputmode="decimal" min="0" step="any" value="${esc(l.overrideFee)}" placeholder="${x.card !== null ? x.card : "POA"}"><label for="r-${id}" class="sr">Reason</label><input id="r-${id}" data-l="reason" value="${esc(l.reason)}" placeholder="Reason"></span>`;
+  if(boss) return `<button class="linkbtn" data-act="showov" data-id="${id}">Change the fee for this quote</button>`;
+  if(num(l.overrideFee) !== null) return `<span class="hint">Fee changed by Gary or Luke: ${gbp(num(l.overrideFee))} – ${esc(l.reason)}</span>`;
+  return `<span class="hint">${esc(l.cert)}${x.col === "epc5" ? " level 5" : ""} is priced by floor area band, so one fee covers the whole building.</span>`;
+}
 function lineRow(x, i){
   const l = x.l, id = l.id, boss = ME.isApprover();
+  const bandTxt = !x.banded ? "" : !(x.area > 0) ? "Floor area" : esc(fmtM2(x.area)) + " m² · " + (x.band ? x.band.label + " band" : "above the largest band") + " · "
+    + (x.overridden ? "fee changed for this quote" + (x.card !== null ? " (card fee " + gbp(x.card) + ")" : "") : x.card === null ? `<span style="color:var(--warn)">price on application – enter a fee</span>` : "fixed fee") + " = <strong>" + (x.ok ? gbp(x.charge) : "–") + "</strong>";
   const rateTxt = x.rate === null ? `<span style="color:var(--warn)">no ${x.col === "epc5" ? "level 5 " : ""}${l.cert} rate set</span>` : gbp(x.rate) + " per m²" + (x.overridden ? " (changed for this quote)" : "");
   return `<div class="row" data-line="${id}">
     <div class="row-h"><b>Building ${i + 1}</b><span class="row-acts">${Q.lines.length > 1 ? `<button class="mv" data-act="moveline" data-id="${id}" data-d="-1" ${i === 0 ? "disabled" : ""} aria-label="Move building ${i + 1} up">↑</button><button class="mv" data-act="moveline" data-id="${id}" data-d="1" ${i === Q.lines.length - 1 ? "disabled" : ""} aria-label="Move building ${i + 1} down">↓</button><button class="linkbtn" data-act="delline" data-id="${id}">Remove</button>` : ""}</span></div>
@@ -1184,7 +1256,7 @@ function lineRow(x, i){
       <div class="field"><label for="p-${id}">Postcode</label><input id="p-${id}" data-l="postcode" value="${esc(l.postcode)}" autocapitalize="characters" ${l.postcode && !validPC(l.postcode) ? 'aria-invalid="true"' : ""}></div>
       <div class="field"><label for="c-${id}">Service</label><select id="c-${id}" data-l="cert">${opt("EPC", "EPC", l.cert)}${opt("DEC", "DEC", l.cert)}${opt("MEES", "MEES", l.cert)}</select></div>
       ${l.cert === "EPC" ? `<div class="field"><label for="lv-${id}">EPC level</label><select id="lv-${id}" data-l="level">${opt("", "Level 3 or 4", l.level === "5" ? "5" : "")}${opt("5", "Level 5", l.level)}</select></div>` : `<div class="field"><label>&nbsp;</label></div>`}
-      <div class="field b-type"><label for="t-${id}">Property type</label>${l.split.on ? `<input id="t-${id}" value="Mixed (split below)" disabled>` : `<select id="t-${id}" data-l="typeId"><option value="">Choose…</option>${S().rates.map(r => opt(r.id, r.type, l.typeId)).join("")}</select>`}</div>
+      <div class="field b-type"><label for="t-${id}">Property type</label>${l.split.on && !x.banded ? `<input id="t-${id}" value="Mixed (split below)" disabled>` : `<select id="t-${id}" data-l="typeId"><option value="">Choose…</option>${S().rates.map(r => opt(r.id, r.type, l.typeId)).join("")}</select>`}</div>
       <div class="field"><label for="a-${id}">Area (m²)</label><input id="a-${id}" data-l="area" type="number" inputmode="decimal" min="0" step="any" value="${esc(l.area)}" class="num"></div>
     </div>
     <div class="areafrom"><span class="af-l">Floor area from</span>
@@ -1195,11 +1267,11 @@ function lineRow(x, i){
       </div>
       <span class="hint">${areaSourceText(l)}</span></div>
     <div class="row-opts">
-      <label class="splitsw"><input type="checkbox" data-sw="${id}" ${l.split.on ? "checked" : ""} ${num(l.override) !== null ? "disabled" : ""}> Split by use (more than one activity)</label>
-      ${boss && !l.split.on ? (num(l.override) !== null || l._showOv ? `<span class="ov"><label for="o-${id}">Rate for this quote (£/m²)</label><input id="o-${id}" data-l="override" type="number" inputmode="decimal" min="0" step="any" value="${esc(l.override)}" placeholder="${x.card !== null ? x.card : ""}"><label for="r-${id}" class="sr">Reason</label><input id="r-${id}" data-l="reason" value="${esc(l.reason)}" placeholder="Reason"></span>` : `<button class="linkbtn" data-act="showov" data-id="${id}">Change the rate for this quote</button>`) : (num(l.override) !== null ? `<span class="hint">Rate changed by Gary or Luke: ${gbp(num(l.override))} per m² – ${esc(l.reason)}</span>` : "")}
+      ${x.banded ? bandedOpts(x, boss) : `<label class="splitsw"><input type="checkbox" data-sw="${id}" ${l.split.on ? "checked" : ""} ${num(l.override) !== null ? "disabled" : ""}> Split by use (more than one activity)</label>
+      ${boss && !l.split.on ? (num(l.override) !== null || l._showOv ? `<span class="ov"><label for="o-${id}">Rate for this quote (£/m²)</label><input id="o-${id}" data-l="override" type="number" inputmode="decimal" min="0" step="any" value="${esc(l.override)}" placeholder="${x.card !== null ? x.card : ""}"><label for="r-${id}" class="sr">Reason</label><input id="r-${id}" data-l="reason" value="${esc(l.reason)}" placeholder="Reason"></span>` : `<button class="linkbtn" data-act="showov" data-id="${id}">Change the rate for this quote</button>`) : (num(l.override) !== null ? `<span class="hint">Rate changed by Gary or Luke: ${gbp(num(l.override))} per m² – ${esc(l.reason)}</span>` : "")}`}
     </div>
-    ${l.split.on ? splitPanel(x) : ""}
-    <p class="calc">${x.split ? splitCalc(x) : (x.area > 0 ? esc(x.area.toLocaleString("en-GB")) + " m²" : "Floor area") + " × " + rateTxt + " = <strong>" + (x.ok ? gbp(x.charge) : "–") + "</strong>"}</p>
+    ${l.split.on && !x.banded ? splitPanel(x) : ""}
+    <p class="calc">${x.banded ? bandTxt : x.split ? splitCalc(x) : (x.area > 0 ? esc(x.area.toLocaleString("en-GB")) + " m²" : "Floor area") + " × " + rateTxt + " = <strong>" + (x.ok ? gbp(x.charge) : "–") + "</strong>"}</p>
   </div>`;
 }
 function travelSection(p){
@@ -1246,7 +1318,7 @@ function ledgerInner(p, probs){
   return `
     <div class="ledger-h"><span>${esc(Q.client.org || Q.client.contact || "Client not entered")}</span><strong>Price breakdown</strong></div>
     <ul class="lines">
-      ${p.lines.map((x, i) => `<li class="${x.ok ? "" : "missing"}"><span>${esc(x.l.cert)}${x.col === "epc5" ? " L5" : ""} – ${esc(x.l.site || "Building " + (i + 1))}<small>${x.area > 0 ? x.area.toLocaleString("en-GB") + " m²" : "no area"} × ${x.rate !== null ? gbp(x.rate) : "no rate"}${x.type ? " · " + esc(x.type.type) : ""}</small></span><span class="num">${x.ok ? gbp(x.charge) : "–"}</span></li>`).join("")}
+      ${p.lines.map((x, i) => `<li class="${x.ok ? "" : "missing"}"><span>${esc(x.l.cert)}${x.col === "epc5" ? " L5" : ""} – ${esc(x.l.site || "Building " + (i + 1))}<small>${x.area > 0 ? x.area.toLocaleString("en-GB") + " m²" : "no area"}${x.banded ? (x.band ? " · " + x.band.label + " band" : "") + (x.ok ? "" : " · fee to set") : " × " + (x.rate !== null ? gbp(x.rate) : "no rate")}${x.type ? " · " + esc(x.type.type) : ""}</small></span><span class="num">${x.ok ? gbp(x.charge) : "–"}</span></li>`).join("")}
       <li class="disc"><span>${esc(p.disc.label)}<small>on card-rate charges only</small></span><span class="num">${p.discount ? "−" + gbp(p.discount) : gbp(0)}</span></li>
       <li><span>Mileage<small>${p.tf.miles.toFixed(1)} miles × £${S().mileageRate}</small></span><span class="num">${gbp(p.mileage)}</span></li>
       <li><span>Travel time<small>${hm(p.tf.hours)} × £${S().hourRate}</small></span><span class="num">${gbp(p.time)}</span></li>
@@ -1309,11 +1381,11 @@ function bindQuote(){
       if(["discountMode","manualPct"].includes(k)) priceChange = true;
     }
     if(el.dataset.l){ const l = Q.lines.find(x => x.id === el.closest("[data-line]").dataset.line); const k = el.dataset.l;
-      if((k === "override" || k === "reason") && !ME.isApprover()) return;
+      if((k === "override" || k === "overrideFee" || k === "reason") && !ME.isApprover()) return;
       l[k] = el.value;
-      if(["cert","typeId","area","override","level"].includes(k)) priceChange = true;
+      if(["cert","typeId","area","override","overrideFee","level"].includes(k)) priceChange = true;
       if(k === "postcode" && e.type === "change"){ l.postcode = normPC(l.postcode); el.value = l.postcode; travelChange = true; }
-      if(e.type === "change" && ["cert","override","level"].includes(k)) redraw = true; }
+      if(e.type === "change" && (["cert","override","overrideFee","level"].includes(k) || (k === "area" && isBanded(colFor(l))))) redraw = true; }
     if(el.dataset.sw){ const l = Q.lines.find(x => x.id === el.dataset.sw); l.split.on = el.checked;
       if(el.checked && !l.split.parts.length){ l.split.parts = [newPart(l.typeId, l.split.mode === "pct" ? "100" : l.area), newPart("", "")]; if(l.split.mode === "pct") l.split.parts[0].value = "80", l.split.parts[1].value = "20"; }
       priceChange = true; redraw = true; }
@@ -1651,7 +1723,7 @@ function approvalCard(q, appr){
   return `<div class="acard" data-q="${q.id}">
     <div><h3>${esc(q.ref)} – ${esc(q.client.org || q.client.contact)}</h3>
       <p class="meta">Prepared by ${esc(q.preparedBy || "–")} · sent ${fmtDT((q.history.filter(h => /approval/i.test(h.text)).pop() || {}).at || q.updatedAt)} · ${q.lines.length} certificate${q.lines.length === 1 ? "" : "s"}</p>
-      <ul class="mini-lines">${p.lines.map(x => x.split ? `<li><span>${esc(x.l.cert)}${x.col === "epc5" ? " (level 5)" : ""} – ${esc(x.l.site || "Building")}, ${x.area ? x.area.toLocaleString("en-GB") + " m²" : "–"} <b>split by use${x.l.split.mode === "pct" ? " (estimated)" : ""}:</b> ${x.split.parts.map(pt => esc(pt.type ? pt.type.type : "?") + " " + pt.pct + "% × " + (pt.rate !== null ? gbp(pt.rate) : "–")).join(", ")}</span><span class="num">${gbp(x.charge)}</span></li>` : `<li><span>${esc(x.l.cert)}${x.col === "epc5" ? " (level 5)" : ""} – ${esc(x.l.site || "Building")}, ${x.area ? x.area.toLocaleString("en-GB") + " m²" : "–"} × ${x.rate !== null ? gbp(x.rate) : "–"}${x.overridden ? " <b>(rate changed: " + esc(x.l.reason) + ")</b>" : ""}</span><span class="num">${gbp(x.charge)}</span></li>`).join("")}
+      <ul class="mini-lines">${p.lines.map(x => x.banded ? `<li><span>${esc(x.l.cert)}${x.col === "epc5" ? " (level 5)" : ""} – ${esc(x.l.site || "Building")}, ${x.area ? x.area.toLocaleString("en-GB") + " m²" : "–"}${x.band ? " (" + esc(x.band.label) + " band)" : ""}${x.overridden ? " <b>(fee changed: " + esc(x.l.reason) + ")</b>" : ""}</span><span class="num">${gbp(x.charge)}</span></li>` : x.split ? `<li><span>${esc(x.l.cert)}${x.col === "epc5" ? " (level 5)" : ""} – ${esc(x.l.site || "Building")}, ${x.area ? x.area.toLocaleString("en-GB") + " m²" : "–"} <b>split by use${x.l.split.mode === "pct" ? " (estimated)" : ""}:</b> ${x.split.parts.map(pt => esc(pt.type ? pt.type.type : "?") + " " + pt.pct + "% × " + (pt.rate !== null ? gbp(pt.rate) : "–")).join(", ")}</span><span class="num">${gbp(x.charge)}</span></li>` : `<li><span>${esc(x.l.cert)}${x.col === "epc5" ? " (level 5)" : ""} – ${esc(x.l.site || "Building")}, ${x.area ? x.area.toLocaleString("en-GB") + " m²" : "–"} × ${x.rate !== null ? gbp(x.rate) : "–"}${x.overridden ? " <b>(rate changed: " + esc(x.l.reason) + ")</b>" : ""}</span><span class="num">${gbp(x.charge)}</span></li>`).join("")}
         ${p.expenses.map(x => `<li><span>${esc(x.e.type)}${x.e.desc ? " – " + esc(x.e.desc) : ""}: ${esc(x.e.qty)} × ${gbp(num(x.e.unit) || 0)}</span><span class="num">${gbp(x.amount)}</span></li>`).join("")}
         <li><span>Lodgement fees</span><span class="num">${gbp(p.lodgement)}</span></li>
         <li><span>Travel: ${p.tf.miles.toFixed(1)} miles, ${hm(p.tf.hours)} (${p.tf.source === "route" ? "driving route" : p.tf.source === "manual" ? "entered by hand: " + esc(q.travel.manualNote) : "estimate"})</span><span class="num">${gbp(p.mileage + p.time)}</span></li>
@@ -1690,22 +1762,43 @@ function viewSaved(){
 }
 
 /* ---------- rate card and settings ---------- */
+/* how each service is priced, and the floor area bands for services with a fixed fee per certificate */
+function bandSection(s, editable, dis){
+  const svc = SVC_COLS.map(([k, label]) => {
+    const pr = s.pricing[k], banded = pr.method === "bands", issues = banded ? bandIssues(k) : [];
+    let lo = 0;
+    const rows = pr.bands.map((b, i) => { const hi = num(b.upTo), from = i === 0 ? "0" : fmtM2(lo + 1); const r = `<tr><td class="num">${from}</td>
+      <td><label class="sr" for="bu-${k}-${b.id}">${label} band ${i + 1}: up to (m²)</label><input id="bu-${k}-${b.id}" class="num" data-band="${k}" data-bi="${i}" data-bk="upTo" type="number" inputmode="decimal" min="0" step="any" value="${esc(b.upTo)}" placeholder="No limit" ${dis}></td>
+      <td><label class="sr" for="bf-${k}-${b.id}">${label} band ${i + 1}: fee (£)</label><input id="bf-${k}-${b.id}" class="num" data-band="${k}" data-bi="${i}" data-bk="fee" type="number" inputmode="decimal" min="0" step="any" value="${esc(b.fee)}" placeholder="On application" ${dis}></td>
+      <td>${editable && pr.bands.length > 1 ? `<button class="linkbtn" data-act="delband" data-k="${k}" data-i="${i}">Remove</button>` : ""}</td></tr>`; if(hi !== null) lo = hi; return r; }).join("");
+    return `<div class="svc-price"><div class="field"><label for="pm-${k}"><b>${label}</b></label><select id="pm-${k}" data-pm="${k}" ${dis}>${opt("rate", "£ per m² by property type (card rates above)", pr.method)}${opt("bands", "Fixed fee by floor area band", pr.method)}</select></div>
+      ${banded ? `<div class="tbl-wrap"><table class="tbl" style="max-width:520px"><thead><tr><th class="num">From (m²)</th><th class="num">Up to (m²)</th><th class="num">Fee per certificate (£)</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+        ${issues.length ? `<p class="hint" style="color:var(--warn)">Check the bands: ${esc(issues.join("; "))}.</p>` : ""}
+        ${editable ? `<button class="btn small addrow" data-act="addband" data-k="${k}">Add a band</button>` : ""}` : ""}</div>`;
+  }).join("");
+  const nb = SVC_COLS.filter(([k]) => s.pricing[k].method === "bands").length;
+  return `<section class="box c-teal"><div class="box-h"><h2>Pricing method and size bands</h2><span class="hint">${nb ? nb + " service" + (nb === 1 ? "" : "s") + " priced by size band" : "All services priced per m²"}</span></div><div class="box-b">
+    <p class="hint" style="margin-top:0">Choose how each service is priced. With size bands, each certificate costs the fee for the band its floor area falls in, whatever the property type, so larger buildings cost less per m². Leave “Up to” blank on the last band for “and above”, and leave a fee blank for price on application: Gary or Luke then enter the fee on the quote. The quantity discount still applies to banded fees.</p>
+    ${svc}</div></section>`;
+}
 function viewRates(){
   const s = S(), editable = ME.canEditSettings(), dis = editable ? "" : "disabled";
-  const missing = s.rates.filter(r => ["epc","epc5","dec","mees"].some(k => num(r[k]) === null)).length;
+  const rateCols = SVC_COLS.map(([k]) => k).filter(k => !isBanded(k));
+  const missing = s.rates.filter(r => rateCols.some(k => num(r[k]) === null)).length;
   const numIn = (id, key, val, label, step) => `<div class="field"><label for="${id}">${label}</label><input id="${id}" data-s="${key}" type="number" step="${step || "any"}" min="0" value="${esc(val)}" ${dis}></div>`;
   $("#app").innerHTML = `
   <div class="phead"><div><h1>Rate card and settings</h1><p>${STORE.mode === "shared" ? "Shared by Gary, Luke and Michelle." : "Saved in this browser."} Changes apply to new calculations straight away.</p></div>
     ${STORE.mode === "local" ? `<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn small" data-act="export">Export</button><label class="btn small" for="imp">Import</label><input id="imp" type="file" accept="application/json" class="sr"></div>` : ""}</div>
   ${editable ? "" : `<p class="note">Only the administrator can change the rate card in shared mode.</p>`}
-  <section class="box c-teal"><div class="box-h"><h2>Card rates (£ per m²)</h2><span class="hint">${missing ? missing + " property type" + (missing === 1 ? "" : "s") + " with a rate still to set" : "All rates set"}</span></div><div class="box-b">
+  <section class="box c-teal"><div class="box-h"><h2>Card rates (£ per m²)</h2><span class="hint">${!rateCols.length ? "Every service is priced by size band" : missing ? missing + " property type" + (missing === 1 ? "" : "s") + " with a rate still to set" : "All rates set"}</span></div><div class="box-b">
     <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Property type</th><th class="num">EPC levels 3–4</th><th class="num">EPC level 5</th><th class="num">DEC</th><th class="num">MEES</th><th></th></tr></thead><tbody>
       ${s.rates.map(r => `<tr data-rate="${r.id}"><td><label class="sr" for="rt-${r.id}">Property type</label><input id="rt-${r.id}" data-r="type" value="${esc(r.type)}" ${dis}></td>
-        ${[["epc","EPC levels 3–4"],["epc5","EPC level 5"],["dec","DEC"],["mees","MEES"]].map(([k, l]) => `<td><label class="sr" for="r${k}-${r.id}">${l} rate for ${esc(r.type)}</label><input id="r${k}-${r.id}" class="num" data-r="${k}" type="number" inputmode="decimal" min="0" step="any" value="${esc(r[k])}" placeholder="Not set" ${dis}></td>`).join("")}
+        ${SVC_COLS.map(([k, l]) => `<td><label class="sr" for="r${k}-${r.id}">${l} rate for ${esc(r.type)}</label><input id="r${k}-${r.id}" class="num" data-r="${k}" type="number" inputmode="decimal" min="0" step="any" value="${isBanded(k) ? "" : esc(r[k])}" placeholder="${isBanded(k) ? "Size bands" : "Not set"}" ${isBanded(k) ? "disabled" : dis}></td>`).join("")}
         <td>${editable ? `<button class="linkbtn" data-act="delrate" data-id="${r.id}">Remove</button>` : ""}</td></tr>`).join("")}
     </tbody></table></div>${editable ? `<button class="btn small addrow" data-act="addrate">Add a property type</button>` : ""}
-    <p class="hint">Level 5 EPCs use their own, higher card rate. The quantity discount applies to these card-rate charges only.</p>
+    <p class="hint">Level 5 EPCs use their own, higher card rate. The quantity discount applies to these card-rate charges only.${rateCols.length < 4 ? " Services priced by size band are set below, so their column here isn't used." : ""}</p>
   </div></section>
+  ${bandSection(s, editable, dis)}
   <div class="grid2" style="gap:0 16px">
   <section class="box c-blue"><div class="box-h"><h2>Lodgement, VAT and rounding</h2></div><div class="box-b">
     <div class="grid3">${numIn("s-le", "lodgement.epc", s.lodgement.epc, "EPC lodgement (£ each)")}${numIn("s-ld", "lodgement.dec", s.lodgement.dec, "DEC lodgement (£ each)")}${numIn("s-lm", "lodgement.mees", s.lodgement.mees, "MEES fee (£ each, if any)")}</div>
@@ -1772,6 +1865,9 @@ function viewRates(){
     if(el.id === "ap-search"){ if(e.type === "input" && STORE.user){ STORE.user.search(el.value).then(hits => { const sel = $("#ap-hit"); sel.innerHTML = hits.map(h => `<option value="${esc(h.id)}"></option>`).join(""); [...sel.options].forEach((o, i) => o.textContent = hits[i].name); }); } return; }
     if(el.id === "ap-hit" || el.id === "ap-label") return;
     if(el.dataset.r){ const r = s.rates.find(x => x.id === el.closest("[data-rate]").dataset.rate); r[el.dataset.r] = el.value; }
+    else if(el.dataset.pm){ if(e.type !== "change") return; s.pricing[el.dataset.pm].method = el.value === "bands" ? "bands" : "rate"; queueSave(); viewRates(); return; }
+    else if(el.dataset.band){ s.pricing[el.dataset.band].bands[Number(el.dataset.bi)][el.dataset.bk] = el.value; queueSave();
+      if(e.type === "change" && el.dataset.bk === "upTo") keepFocus(viewRates); return; }
     else if(el.dataset.tier !== undefined){ s.discount.tiers[Number(el.dataset.tier)][el.dataset.tk] = el.value; }
     else if(el.dataset.s){ const k = el.dataset.s, v = el.value;
       if(k.includes(".")){ const [g, f] = k.split(".");
@@ -1915,7 +2011,9 @@ function summaryText(q){
   const p = price(q), L = [];
   L.push("Quotation " + q.ref + " – " + (q.client.org || q.client.contact));
   L.push("Prepared by " + (q.preparedBy || "–") + " on " + fmtD(q.date)); L.push("");
-  p.lines.forEach((x, i) => L.push(x.split
+  p.lines.forEach((x, i) => L.push(x.banded
+    ? `${i + 1}. ${x.l.cert}${x.col === "epc5" ? " (level 5)" : ""} – ${x.l.site || "Building " + (i + 1)} ${x.l.postcode}: ${x.area} m²${x.band ? " (" + x.band.label + " band)" : ""}${x.overridden ? " (fee changed: " + x.l.reason + ")" : ""} = ${gbp(x.charge)}`
+    : x.split
     ? `${i + 1}. ${x.l.cert}${x.col === "epc5" ? " (level 5)" : ""} – ${x.l.site || "Building " + (i + 1)} ${x.l.postcode}: ${x.area} m² split by use${x.l.split.mode === "pct" ? " (estimated)" : ""} – ${x.split.parts.map(pt => (pt.type ? pt.type.type : "?") + " " + pt.area + " m² × " + gbp(pt.rate)).join(" + ")} = ${gbp(x.charge)}`
     : `${i + 1}. ${x.l.cert}${x.col === "epc5" ? " (level 5)" : ""} – ${x.l.site || "Building " + (i + 1)} ${x.l.postcode}: ${x.area} m² × ${gbp(x.rate)}${x.overridden ? " (rate changed: " + x.l.reason + ")" : ""} = ${gbp(x.charge)}`));
   p.expenses.forEach(x => L.push(`${x.e.type}${x.e.desc ? " (" + x.e.desc + ")" : ""}: ${x.e.qty} × ${gbp(num(x.e.unit) || 0)} = ${gbp(x.amount)}`));
@@ -2028,6 +2126,10 @@ const ACT = {
   async addrate(){ S().rates.push({id:uid(), type:"New property type", epc:"", epc5:"", dec:""}); await STORE.saveSettings(); render(); const r = S().rates[S().rates.length - 1]; $("#rt-" + r.id).select(); },
   delrate(d){ const r = S().rates.find(x => x.id === d.id); if(QUOTES.some(q => q.lines.some(l => l.typeId === d.id)) || Q.lines.some(l => l.typeId === d.id)) return toast(r.type + " is used on a quote, so it can't be removed. Rename it instead.");
     confirmDlg("Remove " + r.type + "?", "This property type will no longer be available on quotes.", "Remove", async () => { SETTINGS.rates = S().rates.filter(x => x.id !== d.id); await STORE.saveSettings(); render(); }, true); },
+  async addband(d){ const b = S().pricing[d.k].bands, last = b[b.length - 1];
+    if(last && num(last.upTo) === null){ const prev = b.length > 1 ? num(b[b.length - 2].upTo) || 0 : 0; last.upTo = prev ? prev * 2 : 100; }
+    b.push({id:uid(), upTo:"", fee:""}); await STORE.saveSettings(); render(); },
+  async delband(d){ S().pricing[d.k].bands.splice(Number(d.i), 1); await STORE.saveSettings(); render(); },
   async addtier(){ S().discount.tiers.push({min:"", pct:""}); await STORE.saveSettings(); render(); },
   async deltier(d){ S().discount.tiers.splice(Number(d.i), 1); await STORE.saveSettings(); render(); },
   async link(){ const id = $("#ap-hit").value, name = $("#ap-label").value; if(!id) return toast("Search for the person's account first.");
