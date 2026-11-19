@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="build-version" content="2026-11-19-01">
+<meta name="build-version" content="2026-11-19-02">
 <title>EPC and DEC pricing – CSR Sustain</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -448,7 +448,7 @@ function defaultSettings(){
        Each band runs from the previous band's upper limit to its own; a blank upper limit means "and above",
        a blank fee means price on application (Gary or Luke enter the fee on the quote). */
     pricing:{
-      epc:{method:"rate", bands:defaultBands([255,295,340,425,595,850,1190,1665,""])},
+      epc:{method:"bands", bands:defaultBands([255,295,340,425,595,850,1190,1665,""])},
       epc5:{method:"rate", bands:defaultBands()},
       dec:{method:"rate", bands:defaultBands()},
       mees:{method:"rate", bands:defaultBands()}
@@ -478,7 +478,7 @@ function mergeSettings(d){
   ["lodgement","rounding","programme","scope","deliverables","travelAdj","travel","discount","vat","google"].forEach(k => { out[k] = Object.assign({}, base[k], d[k] || {}); });
   out.rates = (d.rates || base.rates).map(r => Object.assign({epc5:"", mees:""}, r));
   out.pricing = {};
-  SVC_COLS.forEach(([k]) => { const p = (d.pricing || {})[k] || {}; out.pricing[k] = {method:p.method === "bands" ? "bands" : "rate", bands:Array.isArray(p.bands) ? p.bands.map(b => Object.assign({id:uid(), upTo:"", fee:""}, b)) : base.pricing[k].bands}; });
+  SVC_COLS.forEach(([k]) => { const p = (d.pricing || {})[k] || {}; out.pricing[k] = {method:p.method ? (p.method === "bands" ? "bands" : "rate") : base.pricing[k].method, bands:Array.isArray(p.bands) ? p.bands.map(b => Object.assign({id:uid(), upTo:"", fee:""}, b)) : base.pricing[k].bands}; });
   ["scope","deliverables"].forEach(k => { out[k] = Object.assign({}, base[k], d[k] || {}); });
   out.team = d.team || [];
   return out;
